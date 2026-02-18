@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Website Optimizer - Kostenlose Performance-Analyse</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .container {
+      background: white;
+      border-radius: 20px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+      max-width: 500px;
+      width: 100%;
+      padding: 40px;
+    }
+    .logo {
+      text-align: center;
+      margin-bottom: 30px;
+    }
+    .logo h1 {
+      font-size: 2rem;
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .logo p {
+      color: #666;
+      margin-top: 10px;
+    }
+    .benefits {
+      background: #f8f9fa;
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 30px;
+    }
+    .benefits h3 {
+      color: #333;
+      margin-bottom: 15px;
+      font-size: 1rem;
+    }
+    .benefits ul {
+      list-style: none;
+    }
+    .benefits li {
+      padding: 8px 0;
+      color: #555;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .benefits li::before {
+      content: "✓";
+      color: #10b981;
+      font-weight: bold;
+    }
+    .form-group {
+      margin-bottom: 20px;
+    }
+    label {
+      display: block;
+      margin-bottom: 8px;
+      color: #333;
+      font-weight: 500;
+    }
+    input {
+      width: 100%;
+      padding: 15px;
+      border: 2px solid #e5e7eb;
+      border-radius: 10px;
+      font-size: 16px;
+      transition: border-color 0.3s;
+    }
+    input:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+    button {
+      width: 100%;
+      padding: 18px;
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      color: white;
+      border: none;
+      border-radius: 10px;
+      font-size: 18px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 10px 30px rgba(102, 126, 234, 0.4);
+    }
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      transform: none;
+    }
+    .result {
+      margin-top: 30px;
+      padding: 25px;
+      border-radius: 12px;
+      display: none;
+    }
+    .result.success {
+      display: block;
+      background: #ecfdf5;
+      border: 2px solid #10b981;
+    }
+    .result.error {
+      display: block;
+      background: #fef2f2;
+      border: 2px solid #ef4444;
+    }
+    .result h3 {
+      margin-bottom: 15px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .result.success h3 { color: #047857; }
+    .result.error h3 { color: #b91c1c; }
+    .job-id {
+      background: white;
+      padding: 10px;
+      border-radius: 6px;
+      font-family: monospace;
+      font-size: 14px;
+      margin: 15px 0;
+      word-break: break-all;
+    }
+    .footer {
+      text-align: center;
+      margin-top: 30px;
+      padding-top: 30px;
+      border-top: 1px solid #e5e7eb;
+      color: #999;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="logo">
+      <h1>⚡ Website Optimizer</h1>
+      <p>Kostenlose Website-Performance-Analyse & Optimierung</p>
+    </div>
+    
+    <div class="benefits">
+      <h3>Was du bekommst:</h3>
+      <ul>
+        <li>Komplette Performance-Analyse</li>
+        <li>Vorher/Nachher Vergleich</li>
+        <li>Optimierte Website-Version</li>
+        <li>Detaillierter Report per E-Mail</li>
+        <li>100% kostenlos</li>
+      </ul>
+    </div>
+    
+    <form id="optimizerForm">
+      <div class="form-group">
+        <label for="url">Deine Website URL</label>
+        <input type="url" id="url" name="url" placeholder="https://deine-website.de" required>
+      </div>
+      
+      <div class="form-group">
+        <label for="email">Deine E-Mail-Adresse</label>
+        <input type="email" id="email" name="email" placeholder="deine@email.de" required>
+      </div>
+      
+      <button type="submit" id="submitBtn">
+        🚀 Jetzt kostenlos analysieren
+      </button>
+    </form>
+    
+    <div id="result" class="result">
+      <h3 id="resultTitle"></h3>
+      <p id="resultMessage"></p>
+      <div id="jobId" class="job-id" style="display: none;"></div>
+    </div>
+    
+    <div class="footer">
+      <p>Powered by Ares AI • Ergebnisse in 24-48h</p>
+    </div>
+  </div>
+  
+  <script>
+    const form = document.getElementById('optimizerForm');
+    const submitBtn = document.getElementById('submitBtn');
+    const result = document.getElementById('result');
+    const resultTitle = document.getElementById('resultTitle');
+    const resultMessage = document.getElementById('resultMessage');
+    const jobIdDiv = document.getElementById('jobId');
+    
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      
+      const url = document.getElementById('url').value.trim();
+      const email = document.getElementById('email').value.trim();
+      
+      // Validate
+      if (!url.startsWith('http')) {
+        showResult('error', '❌ Fehler', 'Bitte gib eine gültige URL ein (mit https://)');
+        return;
+      }
+      
+      submitBtn.disabled = true;
+      submitBtn.textContent = '⏳ Wird gesendet...';
+      result.className = 'result';
+      
+      try {
+        const response = await fetch('/api/jobs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url, email })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+          showResult('success', '✅ Erfolg!', 
+            'Wir haben deine Anfrage erhalten. Du bekommst in Kürze eine E-Mail mit deinen Ergebnissen.');
+          jobIdDiv.textContent = 'Job ID: ' + data.jobId;
+          jobIdDiv.style.display = 'block';
+          form.reset();
+        } else {
+          showResult('error', '❌ Fehler', data.error || 'Etwas ist schief gelaufen');
+        }
+      } catch (err) {
+        showResult('error', '❌ Fehler', 'Verbindungsfehler. Bitte versuche es später erneut.');
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = '🚀 Jetzt kostenlos analysieren';
+      }
+    });
+    
+    function showResult(type, title, message) {
+      result.className = 'result ' + type;
+      resultTitle.textContent = title;
+      resultMessage.textContent = message;
+      if (type === 'error') {
+        jobIdDiv.style.display = 'none';
+      }
+    }
+  </script>
+</body>
+</html>
