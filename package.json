@@ -1,13 +1,11 @@
 {
-  "name": "website-optimizer-prod",
-  "version": "1.0.0",
-  "description": "Website Optimizer - Full Service with DB, Netlify, Gmail",
+  "name": "website-optimizer-v2",
+  "version": "2.0.0",
+  "description": "Website Optimizer PROD - Google Sheets DB, Gmail, Netlify",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js",
-    "db:init": "node scripts/init-db.js",
-    "db:migrate": "node scripts/migrate.js"
+    "dev": "node --watch server.js"
   },
   "dependencies": {
     "compression": "^1.7.4",
@@ -16,12 +14,7 @@
     "express": "^4.18.2",
     "express-rate-limit": "^7.1.5",
     "helmet": "^7.1.0",
-    "lighthouse": "^11.4.0",
-    "netlify-cli": "^17.0.0",
-    "node-fetch": "^2.7.0",
     "nodemailer": "^6.9.7",
-    "pg": "^8.11.3",
-    "puppeteer": "^21.6.1",
     "uuid": "^9.0.0"
   },
   "engines": {

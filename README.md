@@ -1,76 +1,52 @@
-# Website Optimizer PROD
+# Website Optimizer PROD v2
 
-Komplette Website-Optimierungs-Plattform mit:
-- PostgreSQL Datenbank
-- Automatische Lighthouse-Analyse
-- Netlify Deployment
-- Gmail-Versand
+Website-Optimierungs-Service mit:
+- **Google Sheets** als Datenbank
+- **Gmail** für Kunden-E-Mails
+- **Netlify** für Deployments (extern via Ares)
 
 ## Architektur
 
 ```
-┌─────────────┐     ┌─────────────────┐     ┌──────────────┐
-│   User UI   │────▶│  Render Server  │────▶│  PostgreSQL  │
-│  (GitHub)   │     │   (Node.js)     │     │   (Render)   │
-└─────────────┘     └─────────────────┘     └──────────────┘
-                             │
-                             ▼
-                      ┌─────────────────┐
-                      │  Ares (AI)      │
-                      │  - Crawlen      │
-                      │  - Optimieren   │
-                      │  - Lighthouse   │
-                      │  - Deploy       │
-                      └─────────────────┘
-                             │
-              ┌──────────────┴──────────────┐
-              ▼                             ▼
-        ┌────────────┐                ┌────────────┐
-        │  Netlify   │                │   Gmail    │
-        │  (Deploy)  │                │  (E-Mail)  │
-        └────────────┘                └────────────┘
+User UI (Render) → Google Sheets (DB) → Ares (AI Worker)
+                                        ↓
+                              ┌─────────┴─────────┐
+                              ↓                   ↓
+                          Netlify           Gmail (Kunde)
 ```
 
 ## Setup
 
-### 1. Datenbank (Render)
-- Neue PostgreSQL DB erstellen
-- DATABASE_URL kopieren
+### 1. Google Sheet erstellen
+- Neue Spreadsheet: "Website Optimizer Jobs"
+- Tabellenblatt: "Jobs"
+- Kopiere die Sheet ID aus der URL:
+  `https://docs.google.com/spreadsheets/d/`**SHEET_ID**`/edit`
 
-### 2. Env Variablen
-```bash
-# Database
-DATABASE_URL=postgresql://...
+### 2. Google Sheets API aktivieren
+- Google Cloud Console → APIs & Services
+- Google Sheets API aktivieren
 
-# Gmail OAuth2 (aus .secrets/gmail_token.json)
-GMAIL_CLIENT_ID=...
-GMAIL_CLIENT_SECRET=...
-GMAIL_REFRESH_TOKEN=...
-GMAIL_FROM=claraclaw@claraclaw.de
+### 3. Env Variablen (Render)
 
-# Netlify
-NETLIFY_TOKEN=...
+Siehe `.env.example` für alle benötigten Variablen.
 
-# Admin
-ADMIN_API_KEY=openssl rand -hex 32
-```
-
-### 3. Deploy
-```bash
-git push origin main
-# Render auto-deploy bei Push
-```
+**Wichtige Variablen:**
+- `GOOGLE_SHEET_ID` - ID des Google Sheets
+- `GOOGLE_ACCESS_TOKEN` - Aktueller Access Token
+- `GMAIL_*` - OAuth2 Credentials für E-Mail
+- `ADMIN_API_KEY` - Für Admin-Endpunkte
 
 ## Workflow
 
 1. **User** gibt URL + Email ein
-2. **Daten** werden in PostgreSQL gespeichert
-3. **Ares** sieht pending jobs über API
+2. **Server** speichert in Google Sheets
+3. **Ares** ruft `/api/jobs/pending` (mit Admin Key)
 4. **Ares** crawlt & optimiert Website
-5. **Ares** deployed zu Netlify
-6. **Ares** speichert Ergebnisse in DB
-7. **Server** sendet Email an User
-8. **Email** enthält Upsell-Angebot
+5. **Ares** speichert Lighthouse-Scores
+6. **Ares** deployed zu Netlify
+7. **Ares** ruft `/api/jobs/:id/complete`
+8. **Server** sendet E-Mail an Kunden
 
 ## API Endpoints
 
@@ -79,10 +55,9 @@ git push origin main
 | POST /api/jobs | Public | Job erstellen |
 | GET /api/jobs/:id | Public | Status checken |
 | GET /api/jobs/pending | Admin | Offene Jobs |
-| POST /api/jobs/:id/lighthouse-before | Admin | Vorher-Test |
-| POST /api/jobs/:id/lighthouse-after | Admin | Nachher-Test |
-| POST /api/jobs/:id/complete | Admin | Job abschließen |
-| POST /api/jobs/:id/deploy | Admin | Zu Netlify deployen |
+| POST /api/jobs/:id/lighthouse-before | Admin | Vorher-Score |
+| POST /api/jobs/:id/lighthouse-after | Admin | Nachher-Score |
+| POST /api/jobs/:id/complete | Admin | Abschließen + E-Mail |
 
 ## Admin Header
 ```

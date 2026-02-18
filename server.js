@@ -7,9 +7,6 @@ const rateLimit = require('express-rate-limit');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 const nodemailer = require('nodemailer');
-const { Pool } = require('pg');
-const lighthouse = require('lighthouse');
-const puppeteer = require('puppeteer');
 const fs = require('fs').promises;
 const { exec } = require('child_process');
 const util = require('util');
@@ -17,13 +14,11 @@ const execPromise = util.promisify(exec);
 
 const app = express();
 
-// Database Setup
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
-});
+// Google Sheets als Datenbank
+const SHEET_ID = process.env.GOOGLE_SHEET_ID;
+const GOOGLE_ACCESS_TOKEN = process.env.GOOGLE_ACCESS_TOKEN;
 
-// Gmail OAuth2 Setup
+// Gmail OAuth2 für Email
 const emailTransporter = nodemailer.createTransporter({
   service: 'gmail',
   auth: {
@@ -77,124 +72,258 @@ const jobLimiter = rateLimit({
 });
 app.use('/api/jobs', jobLimiter);
 
-// ==================== DATABASE FUNCTIONS ====================
+// ==================== GOOGLE SHEETS FUNCTIONS ====================
 
-async function initDatabase() {
-  const client = await pool.connect();
+async function sheetsRequest(range, method = 'GET', body = null) {
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${range}`;
+  const options = {
+    method,
+    headers: {
+      'Authorization': `Bearer ${GOOGLE_ACCESS_TOKEN}`,
+      'Content-Type': 'application/json',
+    },
+  };
+  if (body) options.body = JSON.stringify(body);
+  
+  const response = await fetch(url, options);
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Sheets API error: ${error}`);
+  }
+  return response.json();
+}
+
+async function initSheet() {
+  if (!SHEET_ID) {
+    console.log('[DB] No SHEET_ID set - using in-memory storage');
+    return;
+  }
+  
   try {
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS jobs (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        url TEXT NOT NULL,
-        email TEXT NOT NULL,
-        status TEXT DEFAULT 'submitted',
-        created_at TIMESTAMP DEFAULT NOW(),
-        completed_at TIMESTAMP,
-        lighthouse_before JSONB,
-        lighthouse_after JSONB,
-        netlify_url TEXT,
-        notes TEXT,
-        html_content TEXT
-      )
-    `);
-    console.log('[DB] Initialized');
-  } finally {
-    client.release();
+    // Check if sheet has headers, if not create them
+    const result = await sheetsRequest('Jobs!A1:J1');
+    if (!result.values || result.values.length === 0) {
+      // Create headers
+      await sheetsRequest('Jobs!A1:J1', 'PUT', {
+        values: [['id', 'url', 'email', 'status', 'created_at', 'completed_at', 'lighthouse_before', 'lighthouse_after', 'netlify_url', 'notes']]
+      });
+      console.log('[DB] Sheet initialized with headers');
+    } else {
+      console.log('[DB] Sheet ready');
+    }
+  } catch (err) {
+    console.error('[DB ERROR]', err.message);
   }
 }
 
+// In-memory fallback
+const memoryJobs = new Map();
+
 async function createJob(url, email) {
-  const result = await pool.query(
-    'INSERT INTO jobs (url, email, status) VALUES ($1, $2, $3) RETURNING *',
-    [url, email, 'submitted']
-  );
-  return result.rows[0];
+  const job = {
+    id: uuidv4(),
+    url,
+    email,
+    status: 'submitted',
+    created_at: new Date().toISOString(),
+    completed_at: null,
+    lighthouse_before: null,
+    lighthouse_after: null,
+    netlify_url: null,
+    notes: null,
+  };
+  
+  if (SHEET_ID && GOOGLE_ACCESS_TOKEN) {
+    try {
+      await sheetsRequest('Jobs!A:J', 'POST', {
+        values: [[job.id, job.url, job.email, job.status, job.created_at, job.completed_at, job.lighthouse_before, job.lighthouse_after, job.netlify_url, job.notes]]
+      });
+    } catch (err) {
+      console.error('[DB ERROR]', err);
+      memoryJobs.set(job.id, job);
+    }
+  } else {
+    memoryJobs.set(job.id, job);
+  }
+  
+  return job;
 }
 
 async function getPendingJobs() {
-  const result = await pool.query(
-    'SELECT * FROM jobs WHERE status = $1 ORDER BY created_at DESC',
-    ['submitted']
-  );
-  return result.rows;
+  if (SHEET_ID && GOOGLE_ACCESS_TOKEN) {
+    try {
+      const result = await sheetsRequest('Jobs!A2:J');
+      if (!result.values) return [];
+      
+      return result.values
+        .filter(row => row[3] === 'submitted')
+        .map(row => ({
+          id: row[0],
+          url: row[1],
+          email: row[2],
+          status: row[3],
+          created_at: row[4],
+          completed_at: row[5] || null,
+          lighthouse_before: row[6] ? JSON.parse(row[6]) : null,
+          lighthouse_after: row[7] ? JSON.parse(row[7]) : null,
+          netlify_url: row[8] || null,
+          notes: row[9] || null,
+        }));
+    } catch (err) {
+      console.error('[DB ERROR]', err);
+    }
+  }
+  
+  // Fallback to memory
+  return [...memoryJobs.values()].filter(j => j.status === 'submitted');
+}
+
+async function getAllJobs() {
+  if (SHEET_ID && GOOGLE_ACCESS_TOKEN) {
+    try {
+      const result = await sheetsRequest('Jobs!A2:J');
+      if (!result.values) return [];
+      
+      return result.values.map(row => ({
+        id: row[0],
+        url: row[1],
+        email: row[2],
+        status: row[3],
+        created_at: row[4],
+        completed_at: row[5] || null,
+        lighthouse_before: row[6] ? JSON.parse(row[6]) : null,
+        lighthouse_after: row[7] ? JSON.parse(row[7]) : null,
+        netlify_url: row[8] || null,
+        notes: row[9] || null,
+      }));
+    } catch (err) {
+      console.error('[DB ERROR]', err);
+    }
+  }
+  
+  return [...memoryJobs.values()];
 }
 
 async function getJobById(id) {
-  const result = await pool.query('SELECT * FROM jobs WHERE id = $1', [id]);
-  return result.rows[0];
+  if (SHEET_ID && GOOGLE_ACCESS_TOKEN) {
+    try {
+      const result = await sheetsRequest('Jobs!A2:J');
+      if (!result.values) return null;
+      
+      const row = result.values.find(r => r[0] === id);
+      if (!row) return null;
+      
+      return {
+        id: row[0],
+        url: row[1],
+        email: row[2],
+        status: row[3],
+        created_at: row[4],
+        completed_at: row[5] || null,
+        lighthouse_before: row[6] ? JSON.parse(row[6]) : null,
+        lighthouse_after: row[7] ? JSON.parse(row[7]) : null,
+        netlify_url: row[8] || null,
+        notes: row[9] || null,
+      };
+    } catch (err) {
+      console.error('[DB ERROR]', err);
+    }
+  }
+  
+  return memoryJobs.get(id) || null;
 }
 
 async function updateJobStatus(id, status) {
-  await pool.query('UPDATE jobs SET status = $1 WHERE id = $2', [status, id]);
+  if (SHEET_ID && GOOGLE_ACCESS_TOKEN) {
+    try {
+      // Find row index
+      const result = await sheetsRequest('Jobs!A2:A');
+      if (!result.values) return;
+      
+      const rowIndex = result.values.findIndex(r => r[0] === id);
+      if (rowIndex === -1) return;
+      
+      await sheetsRequest(`Jobs!D${rowIndex + 2}`, 'PUT', {
+        values: [[status]]
+      });
+      return;
+    } catch (err) {
+      console.error('[DB ERROR]', err);
+    }
+  }
+  
+  const job = memoryJobs.get(id);
+  if (job) job.status = status;
 }
 
 async function saveLighthouseBefore(id, scores) {
-  await pool.query('UPDATE jobs SET lighthouse_before = $1 WHERE id = $2', [JSON.stringify(scores), id]);
+  if (SHEET_ID && GOOGLE_ACCESS_TOKEN) {
+    try {
+      const result = await sheetsRequest('Jobs!A2:A');
+      if (!result.values) return;
+      
+      const rowIndex = result.values.findIndex(r => r[0] === id);
+      if (rowIndex === -1) return;
+      
+      await sheetsRequest(`Jobs!G${rowIndex + 2}`, 'PUT', {
+        values: [[JSON.stringify(scores)]]
+      });
+      return;
+    } catch (err) {
+      console.error('[DB ERROR]', err);
+    }
+  }
+  
+  const job = memoryJobs.get(id);
+  if (job) job.lighthouse_before = scores;
 }
 
 async function saveLighthouseAfter(id, scores) {
-  await pool.query('UPDATE jobs SET lighthouse_after = $1 WHERE id = $2', [JSON.stringify(scores), id]);
-}
-
-async function completeJob(id, netlifyUrl, notes, htmlContent) {
-  await pool.query(
-    'UPDATE jobs SET status = $1, completed_at = NOW(), netlify_url = $2, notes = $3, html_content = $4 WHERE id = $5',
-    ['completed', netlifyUrl, notes, htmlContent, id]
-  );
-}
-
-// ==================== LIGHTHOUSE ASSESSMENT ====================
-
-async function runLighthouse(url) {
-  const browser = await puppeteer.launch({
-    headless: 'new',
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
-  });
-  
-  try {
-    const result = await lighthouse(url, {
-      port: new URL(browser.wsEndpoint()).port,
-      output: 'json',
-      onlyCategories: ['performance', 'accessibility', 'best-practices', 'seo'],
-    });
-    
-    return {
-      performance: Math.round(result.lhr.categories.performance.score * 100),
-      accessibility: Math.round(result.lhr.categories.accessibility.score * 100),
-      bestPractices: Math.round(result.lhr.categories['best-practices'].score * 100),
-      seo: Math.round(result.lhr.categories.seo.score * 100),
-      url: url,
-      timestamp: new Date().toISOString()
-    };
-  } finally {
-    await browser.close();
+  if (SHEET_ID && GOOGLE_ACCESS_TOKEN) {
+    try {
+      const result = await sheetsRequest('Jobs!A2:A');
+      if (!result.values) return;
+      
+      const rowIndex = result.values.findIndex(r => r[0] === id);
+      if (rowIndex === -1) return;
+      
+      await sheetsRequest(`Jobs!H${rowIndex + 2}`, 'PUT', {
+        values: [[JSON.stringify(scores)]]
+      });
+      return;
+    } catch (err) {
+      console.error('[DB ERROR]', err);
+    }
   }
+  
+  const job = memoryJobs.get(id);
+  if (job) job.lighthouse_after = scores;
 }
 
-// ==================== NETLIFY DEPLOYMENT ====================
-
-async function deployToNetlify(siteName, htmlContent) {
-  const tempDir = `/tmp/netlify-deploy-${Date.now()}`;
+async function completeJob(id, netlifyUrl, notes) {
+  if (SHEET_ID && GOOGLE_ACCESS_TOKEN) {
+    try {
+      const result = await sheetsRequest('Jobs!A2:A');
+      if (!result.values) return;
+      
+      const rowIndex = result.values.findIndex(r => r[0] === id);
+      if (rowIndex === -1) return;
+      
+      await sheetsRequest(`Jobs!D${rowIndex + 2}:J${rowIndex + 2}`, 'PUT', {
+        values: [['completed', new Date().toISOString(), null, null, netlifyUrl, notes]]
+      });
+      return;
+    } catch (err) {
+      console.error('[DB ERROR]', err);
+    }
+  }
   
-  try {
-    // Create temp directory with files
-    await fs.mkdir(tempDir, { recursive: true });
-    await fs.writeFile(path.join(tempDir, 'index.html'), htmlContent);
-    
-    // Deploy using Netlify CLI
-    const { stdout } = await execPromise(
-      `npx netlify deploy --prod --dir=${tempDir} --site=${siteName} --auth=${process.env.NETLIFY_TOKEN} --json`,
-      { timeout: 120000 }
-    );
-    
-    const deployInfo = JSON.parse(stdout);
-    return deployInfo.deploy_url;
-  } catch (error) {
-    console.error('[NETLIFY ERROR]', error);
-    throw error;
-  } finally {
-    // Cleanup
-    await fs.rm(tempDir, { recursive: true, force: true });
+  const job = memoryJobs.get(id);
+  if (job) {
+    job.status = 'completed';
+    job.completed_at = new Date().toISOString();
+    job.netlify_url = netlifyUrl;
+    job.notes = notes;
   }
 }
 
@@ -282,7 +411,7 @@ async function sendCompletionEmail(job) {
             <li>✅ CDN-Integration</li>
           </ul>
           <p style="margin: 0;">
-            <strong>Interessiert?</strong> Antworte einfach auf diese E-Mail oder besuche unsere Website.
+            <strong>Interessiert?</strong> Antworte einfach auf diese E-Mail.
           </p>
         </div>
       </div>
@@ -370,42 +499,32 @@ app.get('/api/jobs/pending', requireAdminAuth, async (req, res) => {
 // Admin: Get All Jobs
 app.get('/api/jobs/all', requireAdminAuth, async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM jobs ORDER BY created_at DESC');
-    res.json(result.rows);
+    const jobs = await getAllJobs();
+    res.json(jobs);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Admin: Run Lighthouse Before
+// Admin: Save Lighthouse Before
 app.post('/api/jobs/:id/lighthouse-before', requireAdminAuth, async (req, res) => {
   try {
-    const job = await getJobById(req.params.id);
-    if (!job) return res.status(404).json({ error: 'Job not found' });
-    
+    const { scores } = req.body;
     await updateJobStatus(req.params.id, 'processing');
-    const scores = await runLighthouse(job.url);
     await saveLighthouseBefore(req.params.id, scores);
-    
-    res.json({ success: true, scores });
+    res.json({ success: true });
   } catch (err) {
-    console.error('[LIGHTHOUSE ERROR]', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Admin: Run Lighthouse After
+// Admin: Save Lighthouse After
 app.post('/api/jobs/:id/lighthouse-after', requireAdminAuth, async (req, res) => {
   try {
-    const { netlifyUrl } = req.body;
-    if (!netlifyUrl) return res.status(400).json({ error: 'netlifyUrl required' });
-    
-    const scores = await runLighthouse(netlifyUrl);
+    const { scores } = req.body;
     await saveLighthouseAfter(req.params.id, scores);
-    
-    res.json({ success: true, scores });
+    res.json({ success: true });
   } catch (err) {
-    console.error('[LIGHTHOUSE ERROR]', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -413,13 +532,13 @@ app.post('/api/jobs/:id/lighthouse-after', requireAdminAuth, async (req, res) =>
 // Admin: Complete Job
 app.post('/api/jobs/:id/complete', requireAdminAuth, async (req, res) => {
   try {
-    const { netlifyUrl, notes, htmlContent } = req.body;
+    const { netlifyUrl, notes } = req.body;
     if (!netlifyUrl) return res.status(400).json({ error: 'netlifyUrl required' });
     
     const job = await getJobById(req.params.id);
     if (!job) return res.status(404).json({ error: 'Job not found' });
     
-    await completeJob(req.params.id, netlifyUrl, notes, htmlContent);
+    await completeJob(req.params.id, netlifyUrl, notes);
     const updatedJob = await getJobById(req.params.id);
     
     // Send email
@@ -436,23 +555,6 @@ app.post('/api/jobs/:id/complete', requireAdminAuth, async (req, res) => {
   }
 });
 
-// Admin: Deploy to Netlify
-app.post('/api/jobs/:id/deploy', requireAdminAuth, async (req, res) => {
-  try {
-    const { htmlContent, siteName } = req.body;
-    if (!htmlContent || !siteName) {
-      return res.status(400).json({ error: 'htmlContent and siteName required' });
-    }
-    
-    const deployUrl = await deployToNetlify(siteName, htmlContent);
-    
-    res.json({ success: true, deployUrl });
-  } catch (err) {
-    console.error('[DEPLOY ERROR]', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
 // Health Check
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
@@ -461,11 +563,8 @@ app.get('/health', (req, res) => {
 // Start Server
 const PORT = process.env.PORT || 3000;
 
-initDatabase().then(() => {
+initSheet().then(() => {
   app.listen(PORT, () => {
     console.log(`[SERVER] Website Optimizer PROD running on port ${PORT}`);
   });
-}).catch(err => {
-  console.error('[FATAL] Database init failed:', err);
-  process.exit(1);
 });
