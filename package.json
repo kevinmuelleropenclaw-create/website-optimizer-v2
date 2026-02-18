@@ -1,11 +1,10 @@
 {
   "name": "website-optimizer-v2",
   "version": "2.0.0",
-  "description": "Website Optimizer PROD - Google Sheets DB, Gmail, Netlify",
+  "description": "Website Optimizer PROD",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js"
+    "start": "node server.js"
   },
   "dependencies": {
     "compression": "^1.7.4",
@@ -16,8 +15,5 @@
     "helmet": "^7.1.0",
     "nodemailer": "^6.9.7",
     "uuid": "^9.0.0"
-  },
-  "engines": {
-    "node": ">=18.0.0"
   }
 }

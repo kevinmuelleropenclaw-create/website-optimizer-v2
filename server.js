@@ -8,15 +8,11 @@ const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 const nodemailer = require('nodemailer');
 const fs = require('fs').promises;
-const { exec } = require('child_process');
-const util = require('util');
-const execPromise = util.promisify(exec);
 
 const app = express();
 
-// Google Sheets als Datenbank
-const SHEET_ID = process.env.GOOGLE_SHEET_ID;
-const GOOGLE_ACCESS_TOKEN = process.env.GOOGLE_ACCESS_TOKEN;
+// Datenbank (lokale JSON-Datei als persistenter Speicher)
+const DB_PATH = process.env.DB_PATH || './data/jobs.json';
 
 // Gmail OAuth2 für Email
 const emailTransporter = nodemailer.createTransporter({
@@ -72,52 +68,27 @@ const jobLimiter = rateLimit({
 });
 app.use('/api/jobs', jobLimiter);
 
-// ==================== GOOGLE SHEETS FUNCTIONS ====================
+// ==================== JSON DATABASE ====================
 
-async function sheetsRequest(range, method = 'GET', body = null) {
-  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${range}`;
-  const options = {
-    method,
-    headers: {
-      'Authorization': `Bearer ${GOOGLE_ACCESS_TOKEN}`,
-      'Content-Type': 'application/json',
-    },
-  };
-  if (body) options.body = JSON.stringify(body);
-  
-  const response = await fetch(url, options);
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Sheets API error: ${error}`);
-  }
-  return response.json();
-}
+let memoryJobs = new Map();
 
-async function initSheet() {
-  if (!SHEET_ID) {
-    console.log('[DB] No SHEET_ID set - using in-memory storage');
-    return;
-  }
-  
+async function loadDatabase() {
   try {
-    // Check if sheet has headers, if not create them
-    const result = await sheetsRequest('Jobs!A1:J1');
-    if (!result.values || result.values.length === 0) {
-      // Create headers
-      await sheetsRequest('Jobs!A1:J1', 'PUT', {
-        values: [['id', 'url', 'email', 'status', 'created_at', 'completed_at', 'lighthouse_before', 'lighthouse_after', 'netlify_url', 'notes']]
-      });
-      console.log('[DB] Sheet initialized with headers');
-    } else {
-      console.log('[DB] Sheet ready');
-    }
+    await fs.mkdir(path.dirname(DB_PATH), { recursive: true });
+    const data = await fs.readFile(DB_PATH, 'utf-8');
+    const jobs = JSON.parse(data);
+    memoryJobs = new Map(Object.entries(jobs));
+    console.log(`[DB] Loaded ${memoryJobs.size} jobs`);
   } catch (err) {
-    console.error('[DB ERROR]', err.message);
+    console.log('[DB] Starting fresh');
+    memoryJobs = new Map();
   }
 }
 
-// In-memory fallback
-const memoryJobs = new Map();
+async function saveDatabase() {
+  const data = Object.fromEntries(memoryJobs);
+  await fs.writeFile(DB_PATH, JSON.stringify(data, null, 2));
+}
 
 async function createJob(url, email) {
   const job = {
@@ -133,197 +104,55 @@ async function createJob(url, email) {
     notes: null,
   };
   
-  if (SHEET_ID && GOOGLE_ACCESS_TOKEN) {
-    try {
-      await sheetsRequest('Jobs!A:J', 'POST', {
-        values: [[job.id, job.url, job.email, job.status, job.created_at, job.completed_at, job.lighthouse_before, job.lighthouse_after, job.netlify_url, job.notes]]
-      });
-    } catch (err) {
-      console.error('[DB ERROR]', err);
-      memoryJobs.set(job.id, job);
-    }
-  } else {
-    memoryJobs.set(job.id, job);
-  }
-  
+  memoryJobs.set(job.id, job);
+  await saveDatabase();
   return job;
 }
 
 async function getPendingJobs() {
-  if (SHEET_ID && GOOGLE_ACCESS_TOKEN) {
-    try {
-      const result = await sheetsRequest('Jobs!A2:J');
-      if (!result.values) return [];
-      
-      return result.values
-        .filter(row => row[3] === 'submitted')
-        .map(row => ({
-          id: row[0],
-          url: row[1],
-          email: row[2],
-          status: row[3],
-          created_at: row[4],
-          completed_at: row[5] || null,
-          lighthouse_before: row[6] ? JSON.parse(row[6]) : null,
-          lighthouse_after: row[7] ? JSON.parse(row[7]) : null,
-          netlify_url: row[8] || null,
-          notes: row[9] || null,
-        }));
-    } catch (err) {
-      console.error('[DB ERROR]', err);
-    }
-  }
-  
-  // Fallback to memory
   return [...memoryJobs.values()].filter(j => j.status === 'submitted');
 }
 
 async function getAllJobs() {
-  if (SHEET_ID && GOOGLE_ACCESS_TOKEN) {
-    try {
-      const result = await sheetsRequest('Jobs!A2:J');
-      if (!result.values) return [];
-      
-      return result.values.map(row => ({
-        id: row[0],
-        url: row[1],
-        email: row[2],
-        status: row[3],
-        created_at: row[4],
-        completed_at: row[5] || null,
-        lighthouse_before: row[6] ? JSON.parse(row[6]) : null,
-        lighthouse_after: row[7] ? JSON.parse(row[7]) : null,
-        netlify_url: row[8] || null,
-        notes: row[9] || null,
-      }));
-    } catch (err) {
-      console.error('[DB ERROR]', err);
-    }
-  }
-  
   return [...memoryJobs.values()];
 }
 
 async function getJobById(id) {
-  if (SHEET_ID && GOOGLE_ACCESS_TOKEN) {
-    try {
-      const result = await sheetsRequest('Jobs!A2:J');
-      if (!result.values) return null;
-      
-      const row = result.values.find(r => r[0] === id);
-      if (!row) return null;
-      
-      return {
-        id: row[0],
-        url: row[1],
-        email: row[2],
-        status: row[3],
-        created_at: row[4],
-        completed_at: row[5] || null,
-        lighthouse_before: row[6] ? JSON.parse(row[6]) : null,
-        lighthouse_after: row[7] ? JSON.parse(row[7]) : null,
-        netlify_url: row[8] || null,
-        notes: row[9] || null,
-      };
-    } catch (err) {
-      console.error('[DB ERROR]', err);
-    }
-  }
-  
   return memoryJobs.get(id) || null;
 }
 
 async function updateJobStatus(id, status) {
-  if (SHEET_ID && GOOGLE_ACCESS_TOKEN) {
-    try {
-      // Find row index
-      const result = await sheetsRequest('Jobs!A2:A');
-      if (!result.values) return;
-      
-      const rowIndex = result.values.findIndex(r => r[0] === id);
-      if (rowIndex === -1) return;
-      
-      await sheetsRequest(`Jobs!D${rowIndex + 2}`, 'PUT', {
-        values: [[status]]
-      });
-      return;
-    } catch (err) {
-      console.error('[DB ERROR]', err);
-    }
-  }
-  
   const job = memoryJobs.get(id);
-  if (job) job.status = status;
+  if (job) {
+    job.status = status;
+    await saveDatabase();
+  }
 }
 
 async function saveLighthouseBefore(id, scores) {
-  if (SHEET_ID && GOOGLE_ACCESS_TOKEN) {
-    try {
-      const result = await sheetsRequest('Jobs!A2:A');
-      if (!result.values) return;
-      
-      const rowIndex = result.values.findIndex(r => r[0] === id);
-      if (rowIndex === -1) return;
-      
-      await sheetsRequest(`Jobs!G${rowIndex + 2}`, 'PUT', {
-        values: [[JSON.stringify(scores)]]
-      });
-      return;
-    } catch (err) {
-      console.error('[DB ERROR]', err);
-    }
-  }
-  
   const job = memoryJobs.get(id);
-  if (job) job.lighthouse_before = scores;
+  if (job) {
+    job.lighthouse_before = scores;
+    await saveDatabase();
+  }
 }
 
 async function saveLighthouseAfter(id, scores) {
-  if (SHEET_ID && GOOGLE_ACCESS_TOKEN) {
-    try {
-      const result = await sheetsRequest('Jobs!A2:A');
-      if (!result.values) return;
-      
-      const rowIndex = result.values.findIndex(r => r[0] === id);
-      if (rowIndex === -1) return;
-      
-      await sheetsRequest(`Jobs!H${rowIndex + 2}`, 'PUT', {
-        values: [[JSON.stringify(scores)]]
-      });
-      return;
-    } catch (err) {
-      console.error('[DB ERROR]', err);
-    }
-  }
-  
   const job = memoryJobs.get(id);
-  if (job) job.lighthouse_after = scores;
+  if (job) {
+    job.lighthouse_after = scores;
+    await saveDatabase();
+  }
 }
 
 async function completeJob(id, netlifyUrl, notes) {
-  if (SHEET_ID && GOOGLE_ACCESS_TOKEN) {
-    try {
-      const result = await sheetsRequest('Jobs!A2:A');
-      if (!result.values) return;
-      
-      const rowIndex = result.values.findIndex(r => r[0] === id);
-      if (rowIndex === -1) return;
-      
-      await sheetsRequest(`Jobs!D${rowIndex + 2}:J${rowIndex + 2}`, 'PUT', {
-        values: [['completed', new Date().toISOString(), null, null, netlifyUrl, notes]]
-      });
-      return;
-    } catch (err) {
-      console.error('[DB ERROR]', err);
-    }
-  }
-  
   const job = memoryJobs.get(id);
   if (job) {
     job.status = 'completed';
     job.completed_at = new Date().toISOString();
     job.netlify_url = netlifyUrl;
     job.notes = notes;
+    await saveDatabase();
   }
 }
 
@@ -449,14 +278,12 @@ app.post('/api/jobs', async (req, res) => {
       return res.status(400).json({ error: 'URL and email required' });
     }
 
-    // Validate URL
     try {
       new URL(url);
     } catch {
       return res.status(400).json({ error: 'Invalid URL' });
     }
 
-    // Validate Email
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) {
       return res.status(400).json({ error: 'Invalid email' });
@@ -541,7 +368,6 @@ app.post('/api/jobs/:id/complete', requireAdminAuth, async (req, res) => {
     await completeJob(req.params.id, netlifyUrl, notes);
     const updatedJob = await getJobById(req.params.id);
     
-    // Send email
     const emailResult = await sendCompletionEmail(updatedJob);
     
     res.json({
@@ -563,7 +389,7 @@ app.get('/health', (req, res) => {
 // Start Server
 const PORT = process.env.PORT || 3000;
 
-initSheet().then(() => {
+loadDatabase().then(() => {
   app.listen(PORT, () => {
     console.log(`[SERVER] Website Optimizer PROD running on port ${PORT}`);
   });
